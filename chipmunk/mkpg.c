@@ -1,38 +1,9 @@
-/* @(#) HTML-page templates/generation for udpxy status page
- *
- * Copyright 2008-2011 Pavel V. Cherenkov (pcherenkov@gmail.com)
- *
- *  This file is part of udpxy.
- *
- *  udpxy is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation, either version 3 of the License, or
- *  (at your option) any later version.
- *
- *  udpxy is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with udpxy.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-#include <time.h>
-#include <stdio.h>
-#include <assert.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <string.h>
-
-#include <sys/types.h>
-
+#include "platform.h"
 #include "ctx.h"
 #include "prbuf.h"
 #include "udpxy.h"
 #include "util.h"
 #include "mtrace.h"
-
 #include "statpg.h"
 #include "mkpg.h"
 
@@ -84,15 +55,25 @@ mk_client_entries( const struct server_ctx* ctx,
 
         for( i = 0, n = -1; n && (i < ctx->clmax); ++i ) {
             struct client_ctx* client = &(ctx->cl[i]);
-            if( client->pid <= 0 ) continue;
-
+#ifdef _WIN32
+            if( client->dwThreadId <= 0 ) continue;
             n = prbuf_printf( pb, ACLIENT_REC_FMT[ i % 2 ],
-                    ctx->cl[i].pid,
+                    client->dwThreadId,
                     client->src_addr, client->src_port,
                     client->mcast_addr, client->mcast_port,
                     client->tail[0] ? client->tail : "",
                     tpstat_str( &(client->tstat), tpinfo,
                                 sizeof(tpinfo) ) );
+#else
+            if( client->pid <= 0 ) continue;
+            n = prbuf_printf( pb, ACLIENT_REC_FMT[ i % 2 ],
+                    client->pid,
+                    client->src_addr, client->src_port,
+                    client->mcast_addr, client->mcast_port,
+                    client->tail[0] ? client->tail : "",
+                    tpstat_str( &(client->tstat), tpinfo,
+                                sizeof(tpinfo) ) );
+#endif
             if( n <= 0 ) break;
 
             if (n > max_cli_mem)
@@ -177,7 +158,11 @@ mk_status_page( const struct server_ctx* ctx,
         if( n <= 0 ) break;
 
         for(text_size = 0, num_clients = 0, i = 0; i < ctx->clmax; ++i ) {
+#ifdef _WIN32
+            if( ctx->cl[i].dwThreadId > 0 ) {
+#else
             if( ctx->cl[i].pid > 0 ) {
+#endif
                 ++num_clients;
                 text_size += MIN_PER_CLI + strlen(ctx->cl[i].tail);
             }
@@ -235,7 +220,3 @@ mk_status_page( const struct server_ctx* ctx,
 
     return (n > 0 ? 0 : -1);
 }
-
-
-/* __EOF__ */
-

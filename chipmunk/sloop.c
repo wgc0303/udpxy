@@ -18,7 +18,7 @@
  *  along with udpxy.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <sys/syscall.h>
+#include "platform.h"
 
 /* need to know if pselect(2) is available */
 #if defined(SYS_pselect6)

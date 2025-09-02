@@ -20,25 +20,34 @@
 
 .SUFFIXES : .o .c .d
 
-EXEC := udpxy
-UDPXREC := udpxrec
+TARGET_OS ?= linux
 
-STRIP := /usr/bin/strip
+ifeq ($(TARGET_OS),windows)
+    CC := x86_64-w64-mingw32-gcc
+    EXEC := udpxy.exe
+    STRIP := x86_64-w64-mingw32-strip
+    LDFLAGS += -lws2_32 -liphlpapi
+    CPPFLAGS += -D_WIN32
+else
+    EXEC := udpxy
+    UDPXREC := udpxrec
+    STRIP := /usr/bin/strip
+    SYSTEM=$(shell uname 2>/dev/null)
+    ifneq (,$(filter $(SYSTEM),FreeBSD))
+        MAKE := gmake
+        GZIP := /usr/bin/gzip
+    endif
+    ifneq (,$(filter $(SYSTEM),Darwin))
+        GZIP := /usr/bin/gzip
+    endif
+endif
+
 GZIP  := /bin/gzip
 
 MKDEPOPT := -MM
 DEBUG_ON := -g
 
 ALL_CFLAGS = -W -Wall -Werror --pedantic $(CFLAGS)
-
-SYSTEM=$(shell uname 2>/dev/null)
-ifneq (,$(filter $(SYSTEM),FreeBSD))
-MAKE := gmake
-GZIP := /usr/bin/gzip
-endif
-ifneq (,$(filter $(SYSTEM),Darwin))
-GZIP := /usr/bin/gzip
-endif
 
 BUILDFILE = BUILD
 BUILDNO := `cat $(BUILDFILE)`
@@ -148,11 +157,13 @@ $(DEPFILE): $(SRC)
 
 $(EXEC) : $(DEPFILE) $(OBJ)
 	@rm -f $(EXEC)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(COPT) -o $(EXEC) $(OBJ)
+	$(CC) $(CFLAGS) $(COPT) -o $(EXEC) $(OBJ) $(LDFLAGS)
 	@ls -l $(EXEC)
+ifeq ($(TARGET_OS),linux)
 ifneq (yes, $(NO_UDPXREC))
 	@rm -f $(UDPXREC)
 	ln -s $(EXEC) $(UDPXREC)
+endif
 endif
 
 clean:

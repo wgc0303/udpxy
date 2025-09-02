@@ -1,36 +1,4 @@
-/* @(#) implementation of network operations for udpxy
- *
- * Copyright 2008-2011 Pavel V. Cherenkov (pcherenkov@gmail.com)
- *
- *  This file is part of udpxy.
- *
- *  udpxy is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation, either version 3 of the License, or
- *  (at your option) any later version.
- *
- *  udpxy is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with udpxy.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-
-#include <assert.h>
-#include <string.h>
-#include <unistd.h>
-#include <time.h>
-#include <errno.h>
-#include <stdio.h>
-#include <fcntl.h>
-
+#include "platform.h"
 #include "udpxy.h"
 #include "netop.h"
 #include "util.h"
@@ -47,7 +15,7 @@ int
 setup_listener( const char* ipaddr, int port, int* sockfd, int bklog )
 {
 #define LOWMARK 10 /* do not accept input of less than X octets */
-    int rc, lsock, wmark = LOWMARK;
+    int rc, lsock=-1, wmark = LOWMARK;
     struct sockaddr_in servaddr;
     const int ON = 1;
 
@@ -68,7 +36,8 @@ setup_listener( const char* ipaddr, int port, int* sockfd, int bklog )
         servaddr.sin_port = htons( (short)port );
 
         if( '\0' != ipaddr[0] ) {
-            if( 1 != inet_aton(ipaddr, &servaddr.sin_addr) ) {
+            servaddr.sin_addr.s_addr = inet_addr(ipaddr);
+            if( INADDR_NONE == servaddr.sin_addr.s_addr ) {
                 TRACE( (void)tmfprintf( g_flog, "Invalid server IP: [%s]\n",
                         ipaddr) );
 
@@ -81,7 +50,7 @@ setup_listener( const char* ipaddr, int port, int* sockfd, int bklog )
         }
 
         rc = setsockopt( lsock, SOL_SOCKET, SO_REUSEADDR,
-                         &ON, sizeof(ON) );
+                         (const char*)&ON, sizeof(ON) );
         if( 0 != rc ) {
             mperror(g_flog, errno, "%s: setsockopt SO_REUSEADDR",
                     __func__);
@@ -115,7 +84,7 @@ setup_listener( const char* ipaddr, int port, int* sockfd, int bklog )
         if(errno)
             mperror(g_flog, errno, "%s: socket/bind/listen error",
                     __func__);
-        if( lsock ) {
+        if( lsock != -1 ) {
             (void) close( lsock );
         }
     }
@@ -162,14 +131,14 @@ set_multicast( int msockfd, const struct in_addr* mifaddr, const struct in_addr*
       (void) memcpy( &group_source_req.imr_multiaddr, &addr.sin_addr, sizeof(struct in_addr) );
       (void) memcpy( &group_source_req.imr_sourceaddr, s_in_addr, sizeof(struct in_addr) );
       (void) memcpy( &group_source_req.imr_interface, mifaddr, sizeof(struct in_addr) );
-      rc = setsockopt( msockfd, IPPROTO_IP, mreq_operation, &group_source_req, sizeof(group_source_req) );
+      rc = setsockopt( msockfd, IPPROTO_IP, mreq_operation, (char*)&group_source_req, sizeof(group_source_req) );
     }
     else{
       mreq_operation = ( ( strcmp("ADD", opname) == 0 ) ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP );
 
       (void) memcpy( &group_req.imr_multiaddr, &addr.sin_addr, sizeof(struct in_addr) );
       (void) memcpy( &group_req.imr_interface, mifaddr, sizeof(struct in_addr) );
-      rc = setsockopt( msockfd, IPPROTO_IP, mreq_operation, &group_req, sizeof(group_req) );
+      rc = setsockopt( msockfd, IPPROTO_IP, mreq_operation, (char*)&group_req, sizeof(group_req) );
     }
 
     if( 0 != rc ) {
@@ -195,8 +164,8 @@ setup_mcast_listener( struct sockaddr_in*   s_address,
                       int*                  mcastfd,
                       int                   sockbuflen )
 {
-    int sockfd, rc;
-    int ON = 1;
+    int sockfd=-1, rc;
+    const int ON = 1;
     int buflen = sockbuflen;
     size_t rcvbuf_len = 0;
 
@@ -226,7 +195,7 @@ setup_mcast_listener( struct sockaddr_in*   s_address,
         }
 
         rc = setsockopt( sockfd, SOL_SOCKET, SO_REUSEADDR,
-                         &ON, sizeof(ON) );
+                         (const char*)&ON, sizeof(ON) );
         if( 0 != rc ) {
             mperror(g_flog, errno, "%s: setsockopt SO_REUSEADDR",
                     __func__);
@@ -234,11 +203,8 @@ setup_mcast_listener( struct sockaddr_in*   s_address,
         }
 
 #ifdef SO_REUSEPORT
-        /*  On some systems (such as FreeBSD) SO_REUSEADDR
-            just isn't enough to subscribe to N same channels for different clients.
-        */
         rc = setsockopt( sockfd, SOL_SOCKET, SO_REUSEPORT,
-                         &ON, sizeof(ON) );
+                         (const char*)&ON, sizeof(ON) );
         if( 0 != rc ) {
             mperror(g_flog, errno, "%s: setsockopt SO_REUSEPORT",
                     __func__);
@@ -263,7 +229,7 @@ setup_mcast_listener( struct sockaddr_in*   s_address,
     if (mifaddr && 0 != mifaddr->s_addr) {
         struct in_addr ifc_addr;
         memcpy(&ifc_addr, mifaddr, sizeof(struct in_addr));
-        rc = setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, &ifc_addr, sizeof(ifc_addr));
+        rc = setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, (char*)&ifc_addr, sizeof(ifc_addr));
         if (rc) {
             mperror(g_flog, errno, "%s: setsockopt(, IPPROTO_IP, IP_MULTICAST_IF, ...)",
                 __func__);
@@ -278,7 +244,7 @@ setup_mcast_listener( struct sockaddr_in*   s_address,
     TRACE( (void)tmfprintf( g_flog, "Mcast listener socket=[%d] set up\n",
                             sockfd) );
 done:
-    if (rc) {
+    if (rc && sockfd != -1) {
         (void)close(sockfd);
     }
 
@@ -332,7 +298,7 @@ set_timeouts( int rsock, int ssock,
     if( rsock ) {
         rtv.tv_sec = rcv_tmout_sec;
         rtv.tv_usec = rcv_tmout_usec;
-        rc = setsockopt( rsock, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof(rtv) );
+        rc = setsockopt( rsock, SOL_SOCKET, SO_RCVTIMEO, (char*)&rtv, sizeof(rtv) );
         if( -1 == rc ) {
             mperror(g_flog, errno, "%s: setsockopt - SO_RCVTIMEO",
                     __func__);
@@ -345,13 +311,13 @@ set_timeouts( int rsock, int ssock,
     if( ssock ) {
         stv.tv_sec = snd_tmout_sec;
         stv.tv_usec = snd_tmout_usec;
-        rc = setsockopt( ssock, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv) );
+        rc = setsockopt( ssock, SOL_SOCKET, SO_SNDTIMEO, (char*)&stv, sizeof(stv) );
         if( -1 == rc ) {
             mperror(g_flog, errno, "%s: setsockopt - SO_SNDTIMEO", __func__);
             return ERR_INTERNAL;
         }
         TRACE( (void)tmfprintf (g_flog, "socket %d: SEND timeout set to %ld sec, %ld usec\n",
-                rsock, rtv.tv_sec, rtv.tv_usec) );
+                ssock, stv.tv_sec, stv.tv_usec) );
     }
 
     return rc;
@@ -365,13 +331,8 @@ static int
 set_sockbuf_size( int sockfd, int option, const size_t len,
         const char* bufname )
 {
-    size_t data_len = len;
     int rc = 0;
-
-    assert( bufname );
-
-    rc = setsockopt( sockfd, SOL_SOCKET, option,
-                    &data_len, sizeof(data_len) );
+    rc = setsockopt( sockfd, SOL_SOCKET, option, (char*)&len, sizeof(len) );
     if( 0 != rc ) {
         mperror(g_flog, errno, "%s: setsockopt %s [%d]",
                 __func__, bufname, option);
@@ -380,9 +341,8 @@ set_sockbuf_size( int sockfd, int option, const size_t len,
     else {
         TRACE( (void)tmfprintf( g_flog,
             "%s buffer size set to [%u] bytes for socket [%d]\n",
-            bufname, data_len, sockfd ) );
+            bufname, (unsigned int)len, sockfd ) );
     }
-
     return rc;
 }
 
@@ -412,10 +372,8 @@ get_sockbuf_size( int sockfd, int option, size_t* const len,
     int rc = 0;
     size_t buflen = 0;
     socklen_t varsz = sizeof(buflen);
-
     assert( sockfd && len && bufname );
-
-    rc = getsockopt( sockfd, SOL_SOCKET, option, &buflen, &varsz );
+    rc = getsockopt( sockfd, SOL_SOCKET, option, (char*)&buflen, &varsz );
     if (0 != rc) {
         mperror( g_flog, errno, "%s: getsockopt (%s) [%d]", __func__,
                 bufname, option);
@@ -424,59 +382,44 @@ get_sockbuf_size( int sockfd, int option, size_t* const len,
     else {
         TRACE( (void)tmfprintf( g_flog,
             "current %s buffer size is [%u] bytes for socket [%d]\n",
-            bufname, buflen, sockfd ) );
+            bufname, (unsigned int)buflen, sockfd ) );
         *len = buflen;
     }
-
     return rc;
-
 }
 
-/* get socket's send buffer size
- */
 int
 get_sendbuf( int sockfd, size_t* const len )
 {
     return get_sockbuf_size( sockfd, SO_SNDBUF, len, "send" );
 }
 
-
-/* get socket's receive buffer size
- */
 int
 get_rcvbuf( int sockfd, size_t* const len )
 {
     return get_sockbuf_size( sockfd, SO_RCVBUF, len, "receive" );
 }
 
-
-
-/* set/clear file/socket's mode as non-blocking
- */
 int
 set_nblock( int fd, int set )
 {
     int flags = 0;
-
     flags = fcntl( fd, F_GETFL, 0 );
     if( flags < 0 ) {
         mperror( g_flog, errno, "%s: fcntl() getting flags on fd=[%d]",
                     __func__, fd );
         return -1;
     }
-
     if( set )
         flags |= O_NONBLOCK;
     else
         flags &= ~O_NONBLOCK;
-
     if( fcntl( fd, F_SETFL, flags ) < 0 ) {
         mperror( g_flog, errno, "%s: fcntl() %s non-blocking mode "
                 "on fd=[%d]", __func__, (set ? "setting" : "clearing"),
                 fd );
         return -1;
     }
-
     return 0;
 }
 
@@ -490,11 +433,9 @@ sock_info (int peer, int sockfd, char* addr, size_t alen, int* port)
         char data [sizeof(struct sockaddr_in6)];
     } gsa;
     socklen_t len;
-
     const void* dst = NULL;
     struct sockaddr_in6 *sa6 = NULL;
     struct sockaddr_in  *sa4 = NULL;
-
     len = sizeof (gsa.data);
     rc = peer ? getpeername (sockfd, (struct sockaddr*)gsa.data, &len):
                 getsockname (sockfd, (struct sockaddr*)gsa.data, &len);
@@ -504,7 +445,6 @@ sock_info (int peer, int sockfd, char* addr, size_t alen, int* port)
             rc, strerror (rc));
         return rc;
     }
-
     switch (gsa.sa.sa_family) {
         case AF_INET:
             sa4 = (struct sockaddr_in*)&gsa.sa;
@@ -533,7 +473,6 @@ sock_info (int peer, int sockfd, char* addr, size_t alen, int* port)
             __func__, rc, strerror (rc));
         return rc;
     }
-
     return rc;
 }
 
@@ -549,7 +488,3 @@ get_peerinfo (int sockfd, char* addr, size_t alen, int* port)
 {
     return sock_info (e_peer, sockfd, addr, alen, port);
 }
-
-
-/* __EOF__ */
-

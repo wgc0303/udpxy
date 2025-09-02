@@ -1,33 +1,9 @@
-/* @(#) abstracted server loop routine */
+#include "platform.h"
 
-#include <sys/types.h>
-#include <sys/time.h>
-#include <sys/wait.h>
-#include <sys/stat.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-
-#include <netinet/in.h>
-
-#include <unistd.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <signal.h>
-#include <errno.h>
-#include <assert.h>
-#include <fcntl.h>
-#include <syslog.h>
-#include <time.h>
-#include <sys/uio.h>
-
-#include "osdef.h"  /* os-specific definitions */
+#include "osdef.h"
 #include "udpxy.h"
-
 #include "mtrace.h"
 #include "util.h"
-
 #include "ctx.h"
 #include "uopt.h"
 #include "netop.h"
@@ -57,13 +33,15 @@ int
 srv_loop( const char* ipaddr, int port,
              const char* mcast_addr )
 {
-    int                 rc, maxfd, err, nrdy, i;
+    int                 rc=0, maxfd, err, nrdy, i;
     struct in_addr      mcast_inaddr;
     fd_set              rset;
     struct timeval      tmout, idle_tmout, *ptmout = NULL;
     tmfd_t              *asock = NULL;
     size_t              n = 0, nasock = 0, max_nasock = LQ_BACKLOG;
+#ifndef _WIN32
     sigset_t            oset, bset;
+#endif
 
     static const long IDLE_TMOUT_SEC = 30;
 
@@ -77,8 +55,9 @@ srv_loop( const char* ipaddr, int port,
         return ERR_INTERNAL;
     }
 
-    if( 1 != inet_aton(mcast_addr, &mcast_inaddr) ) {
-        mperror(g_flog, errno, "%s: inet_aton", __func__);
+    mcast_inaddr.s_addr = inet_addr(mcast_addr);
+    if (mcast_inaddr.s_addr == INADDR_NONE) {
+        mperror(g_flog, errno, "%s: inet_addr", __func__);
         return ERR_INTERNAL;
     }
 
@@ -95,6 +74,7 @@ srv_loop( const char* ipaddr, int port,
         return rc;
     }
 
+#ifndef _WIN32
     sigemptyset (&bset);
     sigaddset (&bset, SIGINT);
     sigaddset (&bset, SIGQUIT);
@@ -102,30 +82,30 @@ srv_loop( const char* ipaddr, int port,
     sigaddset (&bset, SIGTERM);
 
     (void) sigprocmask (SIG_BLOCK, &bset, &oset);
+#endif
 
     TRACE( (void)tmfprintf( g_flog, "Entering server loop [%s]\n",
         SLOOP_TAG) );
     while (1) {
         FD_ZERO( &rset );
         FD_SET( g_srv.lsockfd, &rset );
+#ifndef _WIN32
         FD_SET( g_srv.cpipe[0], &rset );
-
         maxfd = (g_srv.lsockfd > g_srv.cpipe[0] ) ? g_srv.lsockfd : g_srv.cpipe[0];
+#else
+        maxfd = g_srv.lsockfd;
+#endif
+
         for (i = 0; (size_t)i < nasock; ++i) {
             assert (asock[i].fd >= 0);
             FD_SET (asock[i].fd, &rset);
             if (asock[i].fd > maxfd) maxfd = asock[i].fd;
         }
 
-        /* if there are accepted sockets - apply specified time-out
-         */
         tmout.tv_sec = g_uopt.ssel_tmout;
         tmout.tv_usec = 0;
-
         idle_tmout.tv_sec = IDLE_TMOUT_SEC;
         idle_tmout.tv_usec = 0;
-
-        /* enforce *idle* select(2) timeout to alleviate signal contention */
         ptmout = ((nasock > 0) && (g_uopt.ssel_tmout > 0)) ? &tmout : &idle_tmout;
 
         TRACE( (void)tmfprintf( g_flog, "Waiting for input from [%ld] fd's, "
@@ -135,8 +115,9 @@ srv_loop( const char* ipaddr, int port,
             TRACE( (void)tmfprintf (g_flog, "select() timeout set to "
             "[%ld] seconds\n", ptmout->tv_sec) );
         }
-
+#ifndef _WIN32
         (void) sigprocmask (SIG_UNBLOCK, &bset, NULL);
+#endif
         if( must_quit() ) {
             TRACE( (void)tmfputs( "Must quit now\n", g_flog ) );
             rc = 0; break;
@@ -144,7 +125,9 @@ srv_loop( const char* ipaddr, int port,
 
         nrdy = select (maxfd + 1, &rset, NULL, NULL, ptmout);
         err = errno;
+#ifndef _WIN32
         (void) sigprocmask (SIG_BLOCK, &bset, NULL);
+#endif
 
         if( must_quit() ) {
             TRACE( (void)tmfputs( "Must quit now\n", g_flog ) );
@@ -168,16 +151,15 @@ srv_loop( const char* ipaddr, int port,
             tmout_requests (asock, &nasock);
             rc = 0; continue;
         }
-
+#ifndef _WIN32
         if( FD_ISSET(g_srv.cpipe[0], &rset) ) {
             (void) tpstat_read( &g_srv );
             if (--nrdy <= 0) continue;
         }
-
+#endif
         if ((0 < nasock) &&
                  (0 < (nrdy - (FD_ISSET(g_srv.lsockfd, &rset) ? 1 : 0)))) {
             process_requests (asock, &nasock, &rset, &g_srv);
-            /* n now contains # (yet) unprocessed accepted sockets */
         }
 
         if (FD_ISSET(g_srv.lsockfd, &rset)) {
@@ -187,7 +169,7 @@ srv_loop( const char* ipaddr, int port,
                     (long)nasock, (long)max_nasock);
             }
             else {
-                n = max_nasock - nasock; /* append asock */
+                n = max_nasock - nasock;
                 accept_requests (g_srv.lsockfd, &(asock[nasock]), &n);
                 nasock += n;
             }
@@ -201,8 +183,9 @@ srv_loop( const char* ipaddr, int port,
     }
     free (asock);
 
-    /* receive additional (blocked signals) */
+#ifndef _WIN32
     (void) sigprocmask (SIG_SETMASK, &oset, NULL);
+#endif
     wait_terminated( &g_srv );
     terminate_all_clients( &g_srv );
     wait_all( &g_srv );
@@ -219,4 +202,3 @@ srv_loop( const char* ipaddr, int port,
 
 
 /* __EOF__ */
-

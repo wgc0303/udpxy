@@ -1,3 +1,21 @@
+#include "platform.h"
+#include "udpxy.h"
+#include "config.h"
+#include "mtrace.h"
+#include "rparse.h"
+#include "util.h"
+#include "prbuf.h"
+#include "ifaddr.h"
+#include "ctx.h"
+#include "mkpg.h"
+#include "rtp.h"
+#include "uopt.h"
+#include "dpkt.h"
+#include "netop.h"
+
+/* The rest of the original udpxy.c file follows... */
+/* But I am only modifying the includes for now. */
+/* I will copy the rest of the file content from my previous correct version */
 /* @(#) udpxy server: main module
  *
  * Copyright 2008-2011 Pavel V. Cherenkov (pcherenkov@gmail.com)
@@ -17,46 +35,6 @@
  *  You should have received a copy of the GNU General Public License
  *  along with udpxy.  If not, see <http://www.gnu.org/licenses/>.
  */
-
-#include "osdef.h"  /* os-specific definitions */
-
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <net/if.h>
-#include <sys/wait.h>
-#include <sys/stat.h>
-#include <sys/select.h>
-
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/time.h>
-
-#include <unistd.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <signal.h>
-#include <errno.h>
-#include <assert.h>
-#include <fcntl.h>
-#include <syslog.h>
-#include <time.h>
-#include <sys/uio.h>
-
-#include "mtrace.h"
-#include "rparse.h"
-#include "util.h"
-#include "prbuf.h"
-#include "ifaddr.h"
-
-#include "udpxy.h"
-#include "ctx.h"
-#include "mkpg.h"
-#include "rtp.h"
-#include "uopt.h"
-#include "dpkt.h"
-#include "netop.h"
 
 /* external globals */
 
@@ -94,12 +72,27 @@ static volatile sig_atomic_t g_childexit = 0;
 
 static const int PID_RESET = 1;
 
+#ifdef _WIN32
+// Data structure to pass to the client thread
+struct thread_data {
+    int                 client_sockfd;
+    struct server_ctx*  srv_ctx;
+    char                mcast_addr[IPADDR_STR_SIZE];
+    char                src_addr_str[IPADDR_STR_SIZE];
+    uint16_t            port;
+};
+
+// The function that will be executed by each client thread
+static unsigned __stdcall client_thread_func(void *arg);
+#endif
+
 /*********************************************************/
 
 /* process client requests - implemented in sloop.c */
 extern int srv_loop (const char* ipaddr, int port,
                     const char* mcast_addr);
 
+#ifndef _WIN32
 /* handler for signals to perform a graceful exit
  */
 static void
@@ -111,6 +104,7 @@ handle_quitsigs(int signo)
     TRACE( (void)tmfprintf( g_flog, "*** Caught SIGNAL %d ***\n", signo ) );
     return;
 }
+#endif
 
 
 /* return 1 if the application must gracefully quit
@@ -118,6 +112,7 @@ handle_quitsigs(int signo)
 sig_atomic_t must_quit() { return g_quit; }
 
 
+#ifndef _WIN32
 /* handle SIGCHLD
  */
 static void
@@ -129,6 +124,7 @@ handle_sigchld(int signo)
     TRACE( (void)tmfprintf( g_flog, "*** Caught SIGCHLD (%d) ***\n", signo ) );
     return;
 }
+#endif
 
 /*
 static int get_childexit()      { return g_childexit; }
@@ -139,7 +135,8 @@ static int get_childexit()      { return g_childexit; }
 static void
 wait_children( struct server_ctx* ctx, int options )
 {
-    int status, n = 0;
+#ifndef _WIN32
+    int status=0, n = 0;
     pid_t pid;
 
     assert( ctx );
@@ -153,7 +150,7 @@ wait_children( struct server_ctx* ctx, int options )
 
     TRACE( (void)tmfputs ("Waiting on exited children\n", g_flog) );
     while( 0 < (pid = waitpid( -1, &status, options )) ) {
-        TRACE( (void)tmfprintf( g_flog, "Client [%d] has exited.\n", pid) );
+        TRACE( (void)tmfprintf( g_flog, "Client [%ld] has exited.\n", (long)pid) );
         delete_client( ctx, pid );
         ++n;
     }
@@ -166,7 +163,9 @@ wait_children( struct server_ctx* ctx, int options )
         TRACE( (void)tmfprintf (g_flog, "Cleaned up %d children, "
             "%ld still running\n", n, (long)(ctx->clmax - ctx->clfree)) );
     }
-
+#else
+    (void)ctx; (void)options;
+#endif
     return;
 }
 
@@ -260,29 +259,31 @@ read_command( int sockfd, struct server_ctx *srv)
 
 /* terminate the client process
  */
-static int
-terminate( pid_t pid )
-{
-    TRACE( (void)tmfprintf( g_flog, "Forcing client process [%d] to QUIT\n",
-                            pid) );
-
+#ifdef _WIN32
+static int terminate( HANDLE hThread ) {
+    // A more robust implementation would use events to signal termination.
+    // TerminateThread is a last resort.
+    TRACE( (void)tmfprintf( g_flog, "Forcing client thread [%p] to QUIT\n", hThread) );
+    if (hThread) {
+        TerminateThread(hThread, 0);
+        CloseHandle(hThread);
+    }
+    return 0;
+}
+#else
+static int terminate( pid_t pid ) {
+    TRACE( (void)tmfprintf( g_flog, "Forcing client process [%ld] to QUIT\n", (long)pid) );
     if( pid <= 0 ) return 0;
-
     if( 0 != kill( pid, SIGQUIT ) ) {
         if( ESRCH != errno ) {
             mperror(g_flog, errno, "%s - kill", __func__);
             return ERR_INTERNAL;
         }
-        /* ESRCH could mean client has quit already;
-            * if so we should wait for it */
-
-        TRACE( (void)tmfprintf( g_flog, "Process [%d] is not running.\n",
-                pid ) );
+        TRACE( (void)tmfprintf( g_flog, "Process [%ld] is not running.\n", (long)pid ) );
     }
-
     return 0;
 }
-
+#endif
 
 /*  terminate all clients
  */
@@ -290,13 +291,19 @@ void
 terminate_all_clients( struct server_ctx* ctx )
 {
     size_t i;
+#ifdef _WIN32
+    HANDLE hThread;
+    for( i = 0; i < ctx->clmax; ++i ) {
+        hThread = ctx->cl[i].hThread;
+        if( hThread ) (void) terminate( hThread );
+    }
+#else
     pid_t pid;
-
     for( i = 0; i < ctx->clmax; ++i ) {
         pid = ctx->cl[i].pid;
         if( pid > 0 ) (void) terminate( pid );
     }
-
+#endif
     return;
 }
 
@@ -508,7 +515,9 @@ relay_traffic( int ssockfd, int dsockfd, struct server_ctx* ctx,
     size_t data_len = g_uopt.rbuf_len;
     struct rdata_opt ropt;
     time_t pause_time = 0, rfr_tm = time(NULL);
+#ifndef _WIN32
     sigset_t ubset;
+#endif
 
     const int ALLOW_PAUSES = get_flagval( "UDPXY_ALLOW_PAUSES", 0 );
     const ssize_t MAX_PAUSE_MSEC =
@@ -524,6 +533,7 @@ relay_traffic( int ssockfd, int dsockfd, struct server_ctx* ctx,
 
     assert( ctx && mifaddr && MAX_PAUSE_MSEC > 0 );
 
+#ifndef _WIN32
     (void) sigemptyset (&ubset);
     sigaddset (&ubset, SIGINT);
     sigaddset (&ubset, SIGQUIT);
@@ -535,6 +545,7 @@ relay_traffic( int ssockfd, int dsockfd, struct server_ctx* ctx,
         mperror (g_flog, errno, "%s: sigprocmask", __func__);
         return -1;
     }
+#endif
 
     /* NOPs to eliminate warnings in lean version */
     (void)&lrcv; (void)&lsent; (void)&t_delta;
@@ -651,8 +662,8 @@ relay_traffic( int ssockfd, int dsockfd, struct server_ctx* ctx,
     if( NULL != data ) free( data );
 
     if( 0 != (quit = must_quit()) ) {
-        TRACE( (void)tmfprintf( g_flog, "Child process=[%d] must quit\n",
-                    getpid()) );
+        TRACE( (void)tmfprintf( g_flog, "Child process=[%lu] must quit\n",
+                    (unsigned long)getpid()) );
     }
 
     return rc;
@@ -666,37 +677,29 @@ static int
 udp_relay( int sockfd, struct server_ctx* ctx )
 {
     char                mcast_addr[ IPADDR_STR_SIZE ];
-    char                src_addr[ IPADDR_STR_SIZE ];
-    struct sockaddr_in  s_addr;
+    char                src_addr_str[ IPADDR_STR_SIZE ];
+    struct sockaddr_in  source_sockaddr;
     struct sockaddr_in  m_addr;
 
     uint16_t    port;
-    pid_t       new_pid;
-    int         rc = 0, flags;
-    int         msockfd = -1, sfilefd = -1,
-                dfilefd = -1, srcfd = -1;
-    char        dfile_name[ MAXPATHLEN ];
-    size_t      rcvbuf_len = 0;
-    const struct in_addr *mifaddr;
+    int         rc = 0;
 
     assert( (sockfd > 0) && ctx );
-    mifaddr = &(ctx->mcast_inaddr);
-
 
     TRACE( (void)tmfprintf( g_flog, "udp_relay : new_socket=[%d] param=[%s]\n",
                         sockfd, ctx->rq.param) );
     do {
-        rc = parse_udprelay( ctx->rq.param, sizeof(ctx->rq.param), src_addr, IPADDR_STR_SIZE, mcast_addr, IPADDR_STR_SIZE, &port );
+        rc = parse_udprelay( ctx->rq.param, sizeof(ctx->rq.param), src_addr_str, IPADDR_STR_SIZE, mcast_addr, IPADDR_STR_SIZE, &port );
         if( 0 != rc ) {
             (void) tmfprintf( g_flog, "Error [%d] parsing parameters [%s]\n",
                             rc, ctx->rq.param );
             break;
         }
 
-	memset( &s_addr, 0, sizeof(s_addr) );
+	memset( &source_sockaddr, 0, sizeof(source_sockaddr) );
         /* If the source IP exists, store the IP in the src_addr which is a sockaddr_in struct */
-        if( strlen(src_addr) != 0 && 1 != inet_pton(AF_INET, src_addr, &s_addr.sin_addr) ) {
-            (void) tmfprintf( g_flog, "Invalid  address: [%s]\n", src_addr );
+        if( strlen(src_addr_str) != 0 && 1 != inet_pton(AF_INET, src_addr_str, &source_sockaddr.sin_addr) ) {
+            (void) tmfprintf( g_flog, "Invalid  address: [%s]\n", src_addr_str );
             rc = ERR_INTERNAL;
             break;
         }
@@ -710,7 +713,7 @@ udp_relay( int sockfd, struct server_ctx* ctx )
         /*We're using IPv4 so set AF_INET for both addresses*/
         m_addr.sin_family = AF_INET;
         m_addr.sin_port = htons( (short)port );
-        s_addr.sin_family = AF_INET;
+        source_sockaddr.sin_family = AF_INET;
 
     } while(0);
 
@@ -721,6 +724,30 @@ udp_relay( int sockfd, struct server_ctx* ctx )
 
     /* start the (new) process to relay traffic */
 
+#ifdef _WIN32
+    struct thread_data* tdata = malloc(sizeof(struct thread_data));
+    if (!tdata) {
+        mperror(g_flog, ENOMEM, "%s: malloc for thread_data", __func__);
+        return ERR_INTERNAL;
+    }
+    tdata->client_sockfd = sockfd;
+    tdata->srv_ctx = ctx;
+    strncpy(tdata->mcast_addr, mcast_addr, IPADDR_STR_SIZE);
+    strncpy(tdata->src_addr_str, src_addr_str, IPADDR_STR_SIZE);
+    tdata->port = port;
+
+    unsigned thread_id;
+    uintptr_t thread_handle_ptr = _beginthreadex(NULL, 0, client_thread_func, tdata, 0, &thread_id);
+    if (thread_handle_ptr == 0) {
+        mperror(g_flog, errno, "%s: _beginthreadex", __func__);
+        free(tdata);
+        return ERR_INTERNAL;
+    }
+
+    rc = add_client(ctx, (HANDLE)thread_handle_ptr, thread_id, mcast_addr, port, sockfd);
+    return rc; // parent returns
+#else
+    pid_t new_pid;
     if( 0 != (new_pid = fork()) ) {
         rc = add_client( ctx, new_pid, mcast_addr, port, sockfd );
         return rc; /* parent returns */
@@ -728,8 +755,15 @@ udp_relay( int sockfd, struct server_ctx* ctx )
 
     /* child process:
      */
-    TRACE( (void)tmfprintf( g_flog, "Client process=[%d] started "
-                "for socket=[%d]\n", getpid(), sockfd) );
+    int flags;
+    int msockfd = -1, sfilefd = -1,
+        dfilefd = -1, srcfd = -1;
+    char dfile_name[ MAXPATHLEN ];
+    size_t rcvbuf_len = 0;
+    const struct in_addr *mifaddr = &(ctx->mcast_inaddr);
+
+    TRACE( (void)tmfprintf( g_flog, "Client process=[%lu] started "
+                "for socket=[%d]\n", (unsigned long)getpid(), sockfd) );
 
     (void) get_pidstr( PID_RESET, "c" );
 
@@ -743,7 +777,7 @@ udp_relay( int sockfd, struct server_ctx* ctx )
         /* make write end of pipe non-blocking (we don't want to
         * block on pipe write while relaying traffic)
         */
-        if( -1 == (flags = fcntl( ctx->cpipe[1], F_GETFL )) ||
+        if( -1 == (flags = fcntl( ctx->cpipe[1], F_GETFL, 0 )) ||
             -1 == fcntl( ctx->cpipe[1], F_SETFL, flags | O_NONBLOCK ) ) {
             mperror( g_flog, errno, "%s: fcntl", __func__ );
             rc = -1;
@@ -752,7 +786,7 @@ udp_relay( int sockfd, struct server_ctx* ctx )
 
         if( NULL != g_uopt.dstfile ) {
             (void) snprintf( dfile_name, MAXPATHLEN - 1,
-                    "%s.%d", g_uopt.dstfile, getpid() );
+                    "%s.%lu", g_uopt.dstfile, (unsigned long)getpid() );
             dfilefd = creat( dfile_name, S_IRUSR | S_IWUSR | S_IRGRP );
             if( -1 == dfilefd ) {
                 mperror( g_flog, errno, "%s: g_uopt.dstfile open", __func__ );
@@ -781,20 +815,20 @@ udp_relay( int sockfd, struct server_ctx* ctx )
         else {
             rc = calc_buf_settings( NULL, &rcvbuf_len );
             if (0 == rc ) {
-                rc = setup_mcast_listener( &s_addr, &m_addr, mifaddr, &msockfd,
+                rc = setup_mcast_listener( &source_sockaddr, &m_addr, mifaddr, &msockfd,
                     (g_uopt.nosync_sbuf ? 0 : rcvbuf_len) );
                 srcfd = msockfd;
             }
         }
         if( 0 != rc ) break;
 
-        rc = relay_traffic( srcfd, sockfd, ctx, dfilefd, mifaddr, &(s_addr.sin_addr) );
+        rc = relay_traffic( srcfd, sockfd, ctx, dfilefd, mifaddr, &(source_sockaddr.sin_addr) );
         if( 0 != rc ) break;
 
     } while(0);
 
     if( msockfd > 0 ) {
-        close_mcast_listener( msockfd, mifaddr, &(s_addr.sin_addr));
+        close_mcast_listener( msockfd, mifaddr, &(source_sockaddr.sin_addr));
     }
     if( sfilefd > 0 ) {
        (void) close( sfilefd );
@@ -816,8 +850,8 @@ udp_relay( int sockfd, struct server_ctx* ctx )
 
     closelog();
 
-    TRACE( (void)tmfprintf( g_flog, "Child process=[%d] exits with rc=[%d]\n",
-                getpid(), rc) );
+    TRACE( (void)tmfprintf( g_flog, "Child process=[%lu] exits with rc=[%d]\n",
+                (unsigned long)getpid(), rc) );
 
     if( g_flog && (stderr != g_flog) ) {
         (void) fclose(g_flog);
@@ -829,6 +863,7 @@ udp_relay( int sockfd, struct server_ctx* ctx )
     exit(rc);   /* child exits */
 
     return rc;
+#endif
 }
 
 
@@ -850,7 +885,11 @@ report_status( int sockfd, const struct server_ctx* ctx, int options )
 
     bufsz = BYTES_HDR;
     for (i = 0, clc=ctx->cl; i < ctx->clmax; ++i, ++clc) {
+#ifdef _WIN32
+        if( ctx->cl[i].dwThreadId > 0 )
+#else
         if( ctx->cl[i].pid > 0 )
+#endif
             bufsz += BYTES_PER_CLI + strlen(clc->tail);
     }
 
@@ -987,7 +1026,7 @@ accept_requests (int sockfd, tmfd_t* asock, size_t* alen)
 
         if (g_uopt.tcp_nodelay) {
             if (0 != setsockopt(new_sockfd, IPPROTO_TCP,
-                TCP_NODELAY, &YES, sizeof(YES))) {
+                TCP_NODELAY, (const char*)&YES, sizeof(YES))) {
                     mperror(g_flog, errno, "%s setsockopt TCP_NODELAY",
                         __func__);
             }
@@ -1200,7 +1239,10 @@ int
 udpxy_main( int argc, char* const argv[] )
 {
     int rc = 0, ch = 0, port = -1,
-        custom_log = 0, no_daemon = 0;
+        custom_log = 0;
+#ifndef _WIN32
+    int no_daemon = 0;
+#endif
 
     char ipaddr[IPADDR_STR_SIZE] = "\0",
          mcast_addr[IPADDR_STR_SIZE] = "\0";
@@ -1217,18 +1259,35 @@ udpxy_main( int argc, char* const argv[] )
     static const char UDPXY_OPTMASK[] = "TvSa:l:p:m:c:B:n:R:H:M:";
 #endif
 
+#ifndef _WIN32
     struct sigaction qact, iact, cact, oldact;
+#endif
+
+    init_platform();
+
+    // Check for --create-config argument first
+    if (argc == 2 && strcmp(argv[1], "--create-config") == 0) {
+        if (generate_default_config() == 0) {
+            return 0;
+        } else {
+            return 1;
+        }
+    }
 
     mk_app_info(g_udpxy_app, g_app_info, sizeof(g_app_info) - 1);
     (void) get_pidstr( PID_RESET, "S" );
 
     rc = init_uopt( &g_uopt );
+    load_config( &g_uopt ); // Load config file before parsing command line args
+
     while( (0 == rc) && (-1 != (ch = getopt(argc, argv, UDPXY_OPTMASK))) ) {
         switch( ch ) {
             case 'v': set_verbose( &g_uopt.is_verbose );
                       break;
+#ifndef _WIN32
             case 'T': no_daemon = 1;
                       break;
+#endif
             case 'S': g_uopt.cl_tpstat = uf_TRUE;
                       break;
             case 'a':
@@ -1281,7 +1340,7 @@ udpxy_main( int argc, char* const argv[] )
                         break;
                       }
 
-                      Setlinebuf( g_flog );
+                      setvbuf(g_flog, NULL, _IOLBF, BUFSIZ);
                       custom_log = 1;
                       break;
 
@@ -1411,7 +1470,7 @@ udpxy_main( int argc, char* const argv[] )
                 rc = ERR_INTERNAL; break;
             }
         }
-
+#ifndef _WIN32
         if( 0 == geteuid() ) {
             if( !no_daemon ) {
                 if( stderr == g_flog ) {
@@ -1436,6 +1495,7 @@ udpxy_main( int argc, char* const argv[] )
                 break;
         }
 
+        struct sigaction qact, iact, cact, oldact;
         qact.sa_handler = handle_quitsigs;
         sigemptyset(&qact.sa_mask);
         qact.sa_flags = 0;
@@ -1464,6 +1524,7 @@ udpxy_main( int argc, char* const argv[] )
             perror("sigaction-sigchld");
             rc = ERR_INTERNAL; break;
         }
+#endif
 
         syslog( LOG_NOTICE, "%s is starting\n", g_app_info );
         TRACE( printcmdln( g_flog, g_app_info, argc, argv ) );
@@ -1490,8 +1551,115 @@ udpxy_main( int argc, char* const argv[] )
     closelog();
     free_uopt( &g_uopt );
 
+    cleanup_platform();
     return rc;
 }
 
-/* __EOF__ */
+#ifdef _WIN32
+static unsigned __stdcall client_thread_func(void *arg) {
+    struct thread_data* tdata = (struct thread_data*)arg;
+    int sockfd = tdata->client_sockfd;
+    struct server_ctx* ctx = tdata->srv_ctx;
 
+    int rc = 0;
+    int msockfd = -1, sfilefd = -1,
+        dfilefd = -1, srcfd = -1;
+    char dfile_name[ MAXPATHLEN ];
+    size_t rcvbuf_len = 0;
+    const struct in_addr *mifaddr = &(ctx->mcast_inaddr);
+    struct sockaddr_in source_sockaddr;
+    struct sockaddr_in m_addr;
+
+    char* mcast_addr = tdata->mcast_addr;
+    char* src_addr_str = tdata->src_addr_str;
+    uint16_t port = tdata->port;
+
+    TRACE( (void)tmfprintf( g_flog, "Client thread=[%lu] started "
+                "for socket=[%d]\n", (unsigned long)GetCurrentThreadId(), sockfd) );
+
+    (void) get_pidstr( PID_RESET, "c" );
+
+    memset(&source_sockaddr, 0, sizeof(source_sockaddr));
+    if (strlen(src_addr_str) > 0) {
+        inet_pton(AF_INET, src_addr_str, &source_sockaddr.sin_addr);
+    }
+    inet_pton(AF_INET, mcast_addr, &m_addr.sin_addr);
+    m_addr.sin_family = AF_INET;
+    m_addr.sin_port = htons((short)port);
+    source_sockaddr.sin_family = AF_INET;
+
+    do {
+        if( NULL != g_uopt.dstfile ) {
+            (void) snprintf( dfile_name, MAXPATHLEN - 1,
+                    "%s.%lu", g_uopt.dstfile, (unsigned long)GetCurrentThreadId() );
+            dfilefd = creat( dfile_name, 0 );
+            if( -1 == dfilefd ) {
+                mperror( g_flog, errno, "%s: g_uopt.dstfile open", __func__ );
+                rc = -1;
+                break;
+            }
+
+            TRACE( (void)tmfprintf( g_flog,
+                        "Dest file [%s] opened as fd=[%d]\n",
+                        dfile_name, dfilefd ) );
+        }
+        else dfilefd = -1;
+
+        if( NULL != g_uopt.srcfile ) {
+            sfilefd = open( g_uopt.srcfile, O_RDONLY );
+            if( -1 == sfilefd ) {
+                mperror( g_flog, errno, "%s: g_uopt.srcfile open", __func__ );
+                rc = -1;
+            }
+            else {
+                TRACE( (void) tmfprintf( g_flog, "Source file [%s] opened\n",
+                            g_uopt.srcfile ) );
+                srcfd = sfilefd;
+            }
+        }
+        else {
+            rc = calc_buf_settings( NULL, &rcvbuf_len );
+            if (0 == rc ) {
+                rc = setup_mcast_listener( &source_sockaddr, &m_addr, mifaddr, &msockfd,
+                    (g_uopt.nosync_sbuf ? 0 : rcvbuf_len) );
+                srcfd = msockfd;
+            }
+        }
+        if( 0 != rc ) break;
+
+        rc = relay_traffic( srcfd, sockfd, ctx, dfilefd, mifaddr, &(source_sockaddr.sin_addr) );
+        if( 0 != rc ) break;
+
+    } while(0);
+
+    if( msockfd > 0 ) {
+        close_mcast_listener( msockfd, mifaddr, &(source_sockaddr.sin_addr));
+    }
+    if( sfilefd > 0 ) {
+       (void) close( sfilefd );
+       TRACE( (void) tmfprintf( g_flog, "Source file [%s] closed\n",
+                            g_uopt.srcfile ) );
+    }
+    if( dfilefd > 0 ) {
+       (void) close( dfilefd );
+       TRACE( (void) tmfprintf( g_flog, "Dest file [%s] closed\n",
+                            dfile_name ) );
+    }
+
+    if( 0 != rc ) {
+        (void) send_http_response( sockfd, 500, "Service error" );
+    }
+
+    (void) close( sockfd );
+
+    delete_client(ctx, GetCurrentThreadId());
+
+    TRACE( (void)tmfprintf( g_flog, "Client thread=[%lu] exits with rc=[%d]\n",
+                (unsigned long)GetCurrentThreadId(), rc) );
+
+    free(tdata);
+    return rc;
+}
+#endif
+
+/* __EOF__ */

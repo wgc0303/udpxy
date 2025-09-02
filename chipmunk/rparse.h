@@ -21,8 +21,7 @@
 #ifndef RPARSE_H_121420071651_
 #define RPARSE_H_121420071651_
 
-#include <sys/types.h>
-#include <sys/socket.h>
+#include "platform.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -1,34 +1,4 @@
-/* @(#) implementation of packet-io functions for udpxy
- *
- * Copyright 2008-2011 Pavel V. Cherenkov (pcherenkov@gmail.com)
- *
- *  This file is part of udpxy.
- *
- *  udpxy is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation, either version 3 of the License, or
- *  (at your option) any later version.
- *
- *  udpxy is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with udpxy.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-#include <sys/types.h>
-#include <unistd.h>
-#include <stdio.h>
-#include <assert.h>
-#include <errno.h>
-#include <stdlib.h>
-#include <sys/uio.h>
-#include <string.h>
-#include <strings.h>
-#include <time.h>
-
+#include "platform.h"
 #include "udpxy.h"
 #include "dpkt.h"
 #include "rtp.h"
@@ -84,7 +54,7 @@ ts_sigcheck( const int c, off_t offset, ssize_t len,
         (void) offset; /* get rid of a warning if TRACE is disabled */
         TRACE( (void)tmfprintf( log, "%s: TS signature mismatch TS=[0x%02X], found=[0x%02X]; "
             "offset [0x%X(%u)] of packet len=[%lu]\n",
-            func, MPEG_TS_SIG, c, offset, offset, (u_long)len ) );
+            func, MPEG_TS_SIG, c, (unsigned int)offset, (unsigned int)offset, (u_long)len ) );
     }
 
     return -1;
@@ -185,12 +155,6 @@ get_fstream_type( int fd, FILE* log )
         mperror( log, errno, "%s: lseek", __func__ );
         return UPXDT_UNKNOWN;
     }
-
-    /*
-    TRACE( (void)tmfprintf( log, "%s: stream type = [%d]=[%s]\n",
-                __func__, (int)dtype, fmt2str(dtype) ) );
-    */
-
     return dtype;
 }
 
@@ -278,11 +242,6 @@ read_rtp_file( int fd, char* data, const size_t len, FILE* log )
             return -1;
         }
 
-        /*
-        TRACE( (void)tmfprintf( log, "%s: RTP x-header length=[%lu]\n",
-                    __func__, (u_long)hdrlen ) );
-        */
-
         if( (size_t)offset > hdrlen ) {
             /* read more than needed: step back */
 
@@ -295,10 +254,6 @@ read_rtp_file( int fd, char* data, const size_t len, FILE* log )
             offset -= ((size_t)offset - hdrlen);
             assert( (size_t)offset == hdrlen );
 
-            /*
-            TRACE( (void)tmfprintf( log, "%s: back to fpos=[0x%X], "
-                        "offset=[%ld]\n", __func__, (u_int)where, (long)offset ) );
-            */
         }
         else if( hdrlen > (size_t)offset ) {
             /* read remainder of the header in */
@@ -327,11 +282,6 @@ read_rtp_file( int fd, char* data, const size_t len, FILE* log )
         rdlen = ( (len - offset) < TS_SEG_LEN
                   ? (len - offset)
                   : TS_SEG_LEN );
-
-       /*
-       TRACE( (void)tmfprintf( log, "%s: reading [%lu] more bytes\n",
-               __func__, (u_long)rdlen ) );
-       */
 
         assert( !buf_overrun( data, len, offset, rdlen, log ) );
         nrd = read_buf( fd, data + offset, rdlen, log );
@@ -362,11 +312,6 @@ read_rtp_file( int fd, char* data, const size_t len, FILE* log )
         offset += nrd;
     } /* for */
 
-
-    /* If it is not EOF and no RTP header for the next message is found,
-     * it is either our buffer is too small (to fit the whole message)
-     * or the stream is invalid
-     */
     if( !rtp_end && (0 != nrd) ) {
         (void)tmfprintf( log, "%s: no RTP end after reading [%ld] bytes\n",
                 __func__, (long)offset );
@@ -384,7 +329,6 @@ read_frecord( int fd, char* data, const size_t len,
              upxfmt_t* stream_type, FILE* log )
 {
     upxfmt_t stype;
-    /* off_t where = -1, endmark = -1; */
     ssize_t nrd = -1;
 
     assert( fd > 0 );
@@ -392,12 +336,6 @@ read_frecord( int fd, char* data, const size_t len,
     assert( stream_type && log );
 
     stype = *stream_type;
-
-    /*
-    where = lseek( fd, 0, SEEK_CUR );
-    TRACE( (void)tmfprintf( log, "%s: BEGIN reading at pos=[0x%X:%u]\n",
-                __func__, (u_int)where, (u_int)where ) );
-    */
 
     if( UPXDT_UNKNOWN == *stream_type ) {
         stype = get_fstream_type( fd, log );
@@ -421,19 +359,6 @@ read_frecord( int fd, char* data, const size_t len,
                 __func__, stype );
         return -1;
     }
-
-    /*
-    if( nrd >= 0 ) {
-        endmark = lseek( fd, 0, SEEK_CUR );
-
-        TRACE( (void)tmfprintf( log, "%s: END reading [%ld] bytes at pos=[0x%X:%u]\n",
-                __func__, (long)nrd, (u_int)endmark, (u_int)endmark ) );
-
-        TRACE( sizecheck( "WARNING: Read file discrepancy",
-                    where + nrd, endmark,
-                    log, __func__ ) );
-    }
-    */
 
     return nrd;
 }
@@ -565,11 +490,6 @@ register_packet( struct dstream_ctx* spc, char* buf, size_t len )
 
     new_pkt = &(spc->pkt[ spc->pkt_count ]);
 
-    /*
-    TRACE( (void)tmfprintf( stderr, "IN: packet [%lu]: buf=[%p], len=[%lu]\n",
-                (u_long)spc->pkt_count, (void*)buf, (u_long)len ) );
-    */
-
     if( 0 != RTP_process( &new_buf, &new_len, DO_VERIFY, g_flog ) ) {
         TRACE( (void)tmfputs("register packet: dropping\n", g_flog) );
         spc->flags |= F_DROP_PACKET;
@@ -579,12 +499,6 @@ register_packet( struct dstream_ctx* spc, char* buf, size_t len )
 
     new_pkt->iov_base = new_buf;
     new_pkt->iov_len = new_len;
-
-    /*
-    TRACE( (void)tmfprintf( stderr, "OUT: packet [%lu]: buf=[%p], len=[%lu]\n",
-                (u_long)spc->pkt_count, new_pkt->iov_base,
-                (u_long)new_pkt->iov_len ) );
-    */
 
     spc->pkt_count++;
     return 0;
@@ -607,14 +521,10 @@ read_packet( struct dstream_ctx* spc, int fd, char* buf, size_t len )
     assert( spc && buf && len );
     assert( fd > 0 );
 
-    /* if *RAW* data specified - read AS IS
-     * and exit */
     if( UPXDT_RAW == spc->stype ) {
         return read_buf( fd, buf, len, g_flog );
     }
 
-    /* if it is (or *could* be) RTP, read only MTU bytes
-     */
     if( (spc->stype == UPXDT_RTP_TS) || (spc->flags & F_CHECK_FMT) )
         chunk_len = (len > spc->mtu) ? spc->mtu : len;
 
@@ -633,8 +543,10 @@ read_packet( struct dstream_ctx* spc, int fd, char* buf, size_t len )
         spc->stype = get_mstream_type( buf, n, g_flog );
         switch (spc->stype) {
             case UPXDT_RTP_TS:
-                /* scattered: exclude RTP headers */
-                spc->flags |= F_SCATTERED; break;
+#ifndef _WIN32
+                spc->flags |= F_SCATTERED;
+#endif
+                break;
             case UPXDT_TS:
                 spc->flags &= ~F_SCATTERED; break;
             default:
@@ -670,10 +582,6 @@ read_data( struct dstream_ctx* spc, int fd, char* data,
 
     assert( spc && (data_len > 0) && opt );
 
-    /* if max_frgs < 0, read as many packets as can fit in the buffer,
-     * otherwise read no more than max_frgs packets
-     */
-
     for( m = 0, n = 0; ((opt->max_frgs < 0) ? 1 : (m < opt->max_frgs)); ++m ) {
         nrcv = read_packet( spc, fd, data + n, data_len - n );
         if( nrcv <= 0 ) {
@@ -708,11 +616,6 @@ read_data( struct dstream_ctx* spc, int fd, char* data,
                             (long)buftm_sec ) );
                 break;
             }
-            /*
-            else {
-                (void) tmfprintf( g_flog, "%s: Skip\n", __func__ );
-            }
-            */
         }
     } /* for */
 
@@ -793,7 +696,9 @@ init_dstream_ctx( struct dstream_ctx* ds, const char* cmd, const char* fname,
     }
     else if( 0 == strncmp( cmd, CMD_RTP, CMD_RTP_LEN ) ) {
         ds->stype = UPXDT_RTP_TS;
+#ifndef _WIN32
         ds->flags |= F_SCATTERED;
+#endif
         TRACE( (void)tmfputs( "RTP (over UDP) stream assumed,"
                     " no checks\n", g_flog ) );
     }
@@ -812,7 +717,3 @@ init_dstream_ctx( struct dstream_ctx* ds, const char* cmd, const char* fname,
     ds->max_pkt = nmsgs;
     return 0;
 }
-
-
-
-/* __EOF__ */

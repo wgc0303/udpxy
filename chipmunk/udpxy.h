@@ -21,7 +21,7 @@
 #ifndef UDPXY_H_0110081654
 #define UDPXY_H_0110081654
 
-#include <sys/types.h>
+#include "platform.h"
 
 /* application error codes
  *

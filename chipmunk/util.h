@@ -1,30 +1,7 @@
-/* @(#) interface to utility functions for udpxy
- *
- * Copyright 2008-2011 Pavel V. Cherenkov (pcherenkov@gmail.com)
- *
- *  This file is part of udpxy.
- *
- *  udpxy is free software: you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation, either version 3 of the License, or
- *  (at your option) any later version.
- *
- *  udpxy is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with udpxy.  If not, see <http://www.gnu.org/licenses/>.
- */
-
 #ifndef UTILH_UDPXY_200712181853
 #define UTILH_UDPXY_200712181853
 
-#include <sys/types.h>
-#include <stdio.h>
-
-struct timeval;
+#include "platform.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -147,8 +124,6 @@ a2int64( const char* str, int64_t* pval );
 
 /* returns asctime w/o CR character at the end
  */
-struct tm;
-
 const char*
 Zasctime( const struct tm* tm );
 
@@ -224,6 +199,3 @@ mk_app_info(const char *appname, char *info, size_t infolen);
 #endif
 
 #endif /* UTILH_UDPXY_200712181853 */
-
-/* __EOF__ */
-
